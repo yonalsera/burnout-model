@@ -109,3 +109,15 @@ print(results[[
     "burnout_score",
     "burnout_risk_category"
 ]].head(10))
+
+import pickle
+import os
+
+# create models folder if it doesn't exist
+os.makedirs("models", exist_ok=True)
+
+# save the trained model
+with open("models/burnout_model.pkl", "wb") as f:
+    pickle.dump(model, f)
+
+print("Model saved!")
