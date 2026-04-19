@@ -3,14 +3,11 @@ import pandas as pd
 import numpy as np
 import os
 import pickle
+import json
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 st.set_page_config(page_title="Student Burnout Risk Prediction", page_icon="🧠", layout="wide")
-
-# -----------------------------
-# Helpers
-# -----------------------------
 
 QUESTION_TEXT = {
     "anxiety_level": "How anxious have you felt recently?",
@@ -114,10 +111,6 @@ def risk_color(category: str) -> str:
 
 
 def approximate_stress(values: dict[str, float]) -> float:
-    """
-    Fallback estimate if no trained model is available.
-    Returns a value roughly on a 0-10 scale.
-    """
     score = (
         0.16 * values["anxiety_level"]
         + 0.14 * values["depression"]
@@ -138,8 +131,7 @@ def approximate_stress(values: dict[str, float]) -> float:
         - 0.03 * values["basic_needs"]
         - 0.03 * values["extracurricular_activities"]
     )
-    # Shift and clip to a 0-10 range
-    score = (score + 2.5)
+    score = score + 2.5
     return float(np.clip(score, 0, 10))
 
 
@@ -157,7 +149,6 @@ def compute_burnout_score(values: dict[str, float], predicted_stress: float) -> 
         + 0.05 * (10 - values["academic_performance"])
         + 0.05 * (10 - values["extracurricular_activities"])
     )
-    # Normalize approximate raw range to 0-100 for display
     score_0_100 = (raw / 11.5) * 100
     return float(np.clip(score_0_100, 0, 100))
 
@@ -194,14 +185,18 @@ def burnout_contributions(values: dict[str, float], predicted_stress: float):
 
 @st.cache_resource
 def try_load_model():
-    candidate_paths = [
-        os.path.join(BASE_DIR, "models", "burnout_model.pkl"),
-        os.path.join(BASE_DIR, "burnout-model", "models", "burnout_model.pkl"),
-    ]
-    for model_path in candidate_paths:
-        if os.path.exists(model_path):
-            with open(model_path, "rb") as f:
-                return pickle.load(f)
+    model_path = os.path.join(BASE_DIR, "models", "burnout_model.pkl")
+    if os.path.exists(model_path):
+        with open(model_path, "rb") as f:
+            return pickle.load(f)
+    return None
+
+
+def load_metrics():
+    metrics_path = os.path.join(BASE_DIR, "models", "metrics.json")
+    if os.path.exists(metrics_path):
+        with open(metrics_path, "r") as f:
+            return json.load(f)
     return None
 
 
@@ -226,25 +221,18 @@ def suggested_actions(top_risks):
     return actions[:3]
 
 
-# -----------------------------
-# Header
-# -----------------------------
 st.title("Student Burnout Risk Prediction")
-st.write(
-    "Estimate burnout risk using psychological, physiological, academic, environmental, and social factors."
-)
+st.write("Answer the survey below to estimate burnout risk.")
 
 model = try_load_model()
+metrics = load_metrics()
+
 if model is None:
     st.info("No trained model file found. The app is using an approximate stress estimator for now.")
 else:
     st.success("Loaded trained regression model.")
-# -----------------------------
-# Sidebar Inputs
-# -----------------------------
-st.subheader("Burnout Risk Survey")
-st.write("Answer the questions below, then submit to see your burnout results.")
 
+st.subheader("Burnout Risk Survey")
 st.caption("For most questions, use 0 for very low/not at all and 10 for very high/very often.")
 
 with st.form("burnout_survey_form"):
@@ -262,7 +250,6 @@ with st.form("burnout_survey_form"):
                     options=[0, 1],
                     index=DEFAULTS[feature],
                     format_func=lambda x: "Yes" if x == 1 else "No",
-                    help="Select Yes or No",
                 )
             else:
                 values[feature] = st.slider(
@@ -270,7 +257,6 @@ with st.form("burnout_survey_form"):
                     min_value=0,
                     max_value=10,
                     value=DEFAULTS[feature],
-                    help="0 = very low / not at all, 10 = very high / very often",
                 )
 
     with survey_right:
@@ -280,7 +266,6 @@ with st.form("burnout_survey_form"):
                 min_value=0,
                 max_value=10,
                 value=DEFAULTS[feature],
-                help="0 = very low / not at all, 10 = very high / very often",
             )
 
     submitted = st.form_submit_button("See My Results")
@@ -297,9 +282,6 @@ if st.session_state.submitted_values is None:
 values = st.session_state.submitted_values.copy()
 input_df = pd.DataFrame([values])[FEATURES]
 
-# -----------------------------
-# Prediction Logic
-# -----------------------------
 if model is not None:
     predicted_stress = float(model.predict(input_df)[0])
     predicted_stress = float(np.clip(predicted_stress, 0, 10))
@@ -310,9 +292,14 @@ burnout_score = compute_burnout_score(values, predicted_stress)
 category = categorize_burnout(burnout_score)
 top_risks, top_protective = burnout_contributions(values, predicted_stress)
 
-# -----------------------------
-# Main Layout
-# -----------------------------
+if metrics:
+    st.subheader("Model Performance")
+    m1, m2 = st.columns(2)
+    with m1:
+        st.metric("R² Score", f"{metrics['r2']:.2f}")
+    with m2:
+        st.metric("MSE", f"{metrics['mse']:.3f}")
+
 col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
     st.metric("Predicted Stress", f"{predicted_stress:.2f} / 10")
@@ -365,13 +352,13 @@ with right:
 
 st.divider()
 
-explain_left, explain_right = st.columns(2)
-with explain_left:
+e1, e2 = st.columns(2)
+with e1:
     st.subheader("Top Risk Drivers")
     for name, value in top_risks:
         st.write(f"- **{name}**: {value:.2f}")
 
-with explain_right:
+with e2:
     st.subheader("Top Protective Factors")
     for name, value in top_protective:
         st.write(f"- **{name}**: {value:.1f}/10")
@@ -397,7 +384,7 @@ if what_if_factor == "mental_health_history":
         "Simulated value",
         options=[0, 1],
         index=int(current_value),
-        help="0 = No history, 1 = Has history",
+        format_func=lambda x: "Yes" if x == 1 else "No",
         key="what_if_value_mhh",
     )
 else:
@@ -422,12 +409,12 @@ else:
 simulated_burnout = compute_burnout_score(simulated_values, simulated_stress)
 delta = simulated_burnout - burnout_score
 
-sim_col1, sim_col2, sim_col3 = st.columns(3)
-with sim_col1:
+s1, s2, s3 = st.columns(3)
+with s1:
     st.metric("Current Burnout Score", f"{burnout_score:.1f}")
-with sim_col2:
+with s2:
     st.metric("Simulated Burnout Score", f"{simulated_burnout:.1f}")
-with sim_col3:
+with s3:
     st.metric("Change", f"{delta:+.1f}")
 
 st.caption(
@@ -437,19 +424,17 @@ st.caption(
 st.divider()
 
 st.subheader("Download Results")
-report_df = pd.DataFrame([
-    {
-        "predicted_stress": round(predicted_stress, 2),
-        "burnout_score": round(burnout_score, 2),
-        "risk_category": category,
-        "top_risk_1": top_risks[0][0] if len(top_risks) > 0 else "",
-        "top_risk_2": top_risks[1][0] if len(top_risks) > 1 else "",
-        "top_risk_3": top_risks[2][0] if len(top_risks) > 2 else "",
-        "top_protective_1": top_protective[0][0] if len(top_protective) > 0 else "",
-        "top_protective_2": top_protective[1][0] if len(top_protective) > 1 else "",
-        "top_protective_3": top_protective[2][0] if len(top_protective) > 2 else "",
-    }
-])
+report_df = pd.DataFrame([{
+    "predicted_stress": round(predicted_stress, 2),
+    "burnout_score": round(burnout_score, 2),
+    "risk_category": category,
+    "top_risk_1": top_risks[0][0] if len(top_risks) > 0 else "",
+    "top_risk_2": top_risks[1][0] if len(top_risks) > 1 else "",
+    "top_risk_3": top_risks[2][0] if len(top_risks) > 2 else "",
+    "top_protective_1": top_protective[0][0] if len(top_protective) > 0 else "",
+    "top_protective_2": top_protective[1][0] if len(top_protective) > 1 else "",
+    "top_protective_3": top_protective[2][0] if len(top_protective) > 2 else "",
+}])
 
 for feature in FEATURES:
     report_df[feature] = values[feature]
@@ -468,6 +453,5 @@ with st.expander("How the model works"):
     st.write(
         "This app uses a hybrid approach. A regression model estimates stress from student factors, then a weighted burnout formula combines predicted stress with major contributors such as anxiety, depression, study load, sleep quality, and social support."
     )
-
 
 st.caption("Built with Streamlit for the website portion of the burnout risk project.")
